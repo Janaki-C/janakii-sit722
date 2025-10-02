@@ -5,9 +5,6 @@ on:
     branches: [ testing ]
   workflow_dispatch:
 
-env:
-  IMAGE_TAG: ${{ github.sha }}
-
 jobs:
   test_backends:
     name: Run backend tests
@@ -135,7 +132,7 @@ jobs:
           file: ./backend/product_service/Dockerfile
           push: true
           tags: |
-            ${{ steps.acr.outputs.server }}/product-service:${{ env.IMAGE_TAG }}
+            ${{ steps.acr.outputs.server }}/product-service:${{ github.sha }}
             ${{ steps.acr.outputs.server }}/product-service:testing
 
       - name: Build & Push order-service
@@ -145,13 +142,12 @@ jobs:
           file: ./backend/order_service/Dockerfile
           push: true
           tags: |
-            ${{ steps.acr.outputs.server }}/order-service:${{ env.IMAGE_TAG }}
+            ${{ steps.acr.outputs.server }}/order-service:${{ github.sha }}
             ${{ steps.acr.outputs.server }}/order-service:testing
 
-  
   deploy_staging:
     needs: build_and_push_images
     uses: ./.github/workflows/ci-stage2.yml
     with:
-      image_tag: ${{ env.IMAGE_TAG }}  
-    secrets: inherit                     
+      image_tag: ${{ github.sha }}   
+    secrets: inherit                 
