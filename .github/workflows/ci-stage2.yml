@@ -22,17 +22,15 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-     
       - name: Get AKS credentials (and verify)
         run: |
           set -e
           az aks get-credentials \
             -g "${{ vars.RESOURCE_GROUP }}" \
             -n "${{ vars.AKS_NAME }}" \
+            --admin \
             --overwrite-existing
-          echo "Current context:"
           kubectl config current-context
-          echo "Cluster nodes:"
           kubectl get nodes
 
       - name: Create ephemeral namespace
@@ -41,9 +39,24 @@ jobs:
       - name: Apply manifests to staging namespace
         run: kubectl apply -n "$NS" -f k8s/
 
+      - name: Resolve image registry
+        id: reg
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.ACR_LOGIN_SERVER }}" ]; then
+            echo "server=${{ secrets.ACR_LOGIN_SERVER }}" >> $GITHUB_OUTPUT
+          else
+            if [ -z "${{ secrets.ACR_NAME }}" ]; then
+              echo "Either ACR_LOGIN_SERVER (e.g. sit722trilochanacr.azurecr.io) or ACR_NAME is required" 1>&2
+              exit 1
+            fi
+            SERVER=$(az acr show -n "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)
+            echo "server=${SERVER}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Point deployments to freshly built images
         run: |
-          SERVER=$(az acr show -n "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)
+          SERVER="${{ steps.reg.outputs.server }}"
           TAG="${{ inputs.image_tag }}"
           kubectl set image -n "$NS" deployment/product-service product=$SERVER/product-service:$TAG
           kubectl set image -n "$NS" deployment/order-service   order=$SERVER/order-service:$TAG
@@ -61,6 +74,5 @@ jobs:
       - name: Tear down staging (always)
         if: always()
         run: |
-          # Skip cleanup gracefully if no context (e.g., earlier failure)
           kubectl config current-context >/dev/null 2>&1 || exit 0
           kubectl delete ns "$NS" --ignore-not-found=true --wait=true || true
