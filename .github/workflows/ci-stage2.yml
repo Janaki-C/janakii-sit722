@@ -22,9 +22,19 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Get AKS credentials
+      # Use repo VARIABLES: Settings → Secrets and variables → Variables
+      # RESOURCE_GROUP = <your RG>, AKS_NAME = <your AKS cluster>
+      - name: Get AKS credentials (and verify)
         run: |
-          az aks get-credentials -g "${{ vars.RESOURCE_GROUP }}" -n "${{ vars.AKS_NAME }}" --overwrite-existing
+          set -e
+          az aks get-credentials \
+            -g "${{ vars.RESOURCE_GROUP }}" \
+            -n "${{ vars.AKS_NAME }}" \
+            --overwrite-existing
+          echo "Current context:"
+          kubectl config current-context
+          echo "Cluster nodes:"
+          kubectl get nodes
 
       - name: Create ephemeral namespace
         run: kubectl create ns "$NS"
@@ -51,4 +61,7 @@ jobs:
 
       - name: Tear down staging (always)
         if: always()
-        run: kubectl delete ns "$NS" --wait=true
+        run: |
+          # Skip cleanup gracefully if no context (e.g., earlier failure)
+          kubectl config current-context >/dev/null 2>&1 || exit 0
+          kubectl delete ns "$NS" --ignore-not-found=true --wait=true || true
