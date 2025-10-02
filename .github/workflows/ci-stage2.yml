@@ -21,14 +21,13 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-
+      
       - name: Get AKS credentials (and verify)
         run: |
           set -e
           az aks get-credentials \
             -g "${{ vars.RESOURCE_GROUP }}" \
             -n "${{ vars.AKS_NAME }}" \
-            --admin \
             --overwrite-existing
           kubectl config current-context
           kubectl get nodes
