@@ -22,8 +22,7 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Use repo VARIABLES: Settings → Secrets and variables → Variables
-      # RESOURCE_GROUP = <your RG>, AKS_NAME = <your AKS cluster>
+     
       - name: Get AKS credentials (and verify)
         run: |
           set -e
