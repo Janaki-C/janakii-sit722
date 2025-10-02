@@ -1,0 +1,95 @@
+name: Stage 3 — Deploy to Production (on merge to main)
+
+on:
+  push:
+    branches: [ main ]           # runs after a PR is merged to main
+  workflow_dispatch:              # manual run if needed
+
+jobs:
+  build_and_deploy_prod:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Build & push production images (tag with SHA and 'prod')
+      - name: Resolve ACR login server
+        id: reg
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.ACR_LOGIN_SERVER }}" ]; then
+            echo "server=${{ secrets.ACR_LOGIN_SERVER }}" >> $GITHUB_OUTPUT
+          else
+            if [ -z "${{ secrets.ACR_NAME }}" ]; then
+              echo "Either ACR_LOGIN_SERVER or ACR_NAME must be set as a secret." 1>&2
+              exit 1
+            fi
+            echo "server=$(az acr show -n "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: ACR login
+        run: az acr login --name "${{ secrets.ACR_NAME }}"
+
+      - name: Build & Push product-service (prod)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend/product_service
+          file: ./backend/product_service/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.reg.outputs.server }}/product-service:${{ github.sha }}
+            ${{ steps.reg.outputs.server }}/product-service:prod
+
+      - name: Build & Push order-service (prod)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend/order_service
+          file: ./backend/order_service/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.reg.outputs.server }}/order-service:${{ github.sha }}
+            ${{ steps.reg.outputs.server }}/order-service:prod
+
+      # ---- Deploy to production AKS ----
+      # If prod uses the SAME cluster as staging, reuse RESOURCE_GROUP/AKS_NAME.
+      # If it's a different cluster, add repo variables: PROD_RESOURCE_GROUP / PROD_AKS_NAME
+      - name: Get AKS credentials (prod)
+        shell: bash
+        run: |
+          RG="${{ vars.PROD_RESOURCE_GROUP != '' && vars.PROD_RESOURCE_GROUP || vars.RESOURCE_GROUP }}"
+          AKS="${{ vars.PROD_AKS_NAME != '' && vars.PROD_AKS_NAME || vars.AKS_NAME }}"
+          if [ -z "$RG" ] || [ -z "$AKS" ]; then
+            echo "Set repo variables: RESOURCE_GROUP and AKS_NAME (or PROD_RESOURCE_GROUP / PROD_AKS_NAME)." 1>&2
+            exit 1
+          fi
+          az aks get-credentials -g "$RG" -n "$AKS" --admin --overwrite-existing
+          kubectl config current-context
+          kubectl get nodes
+
+      - name: Ensure prod namespace exists
+        shell: bash
+        run: |
+          NS="${{ vars.PROD_NAMESPACE != '' && vars.PROD_NAMESPACE || 'prod' }}"
+          kubectl get ns "$NS" >/dev/null 2>&1 || kubectl create ns "$NS"
+          echo "NS=$NS" >> $GITHUB_ENV
+
+      - name: Apply manifests to prod
+        run: kubectl apply -n "$NS" -f k8s/
+
+      - name: Set prod images
+        run: |
+          SERVER="${{ steps.reg.outputs.server }}"
+          # choose which tag to deploy: use 'prod' (stable) or the exact SHA from this merge
+          TAG="prod"
+          kubectl set image -n "$NS" deployment/product-service product=$SERVER/product-service:$TAG
+          kubectl set image -n "$NS" deployment/order-service   order=$SERVER/order-service:$TAG
+
+      - name: Wait for rollouts (prod)
+        run: |
+          kubectl rollout status -n "$NS" deployment/product-service --timeout=300s
+          kubectl rollout status -n "$NS" deployment/order-service   --timeout=300s
