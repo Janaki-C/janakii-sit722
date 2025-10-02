@@ -1,93 +1,152 @@
-name: Stage 1 CI — test then build/push to ACR
+name: Backend CI - Test, Build and Push Images to ACR (Stage 1)
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ testing ]
+    branches:
+      - testing
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend_ci.yml'
+
+env:
+
+  ACR_NAME: ${{ secrets.ACR_NAME }}                     
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}     
+  IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
 
 jobs:
-  test:
-    name: Run unit tests
+  test_and_lint_backends:
+    name: Run backend tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        svc:
-          - { name: customer_service, path: backend/customer_service }
-          - { name: product_service,  path: backend/product_service  }
-          - { name: order_service,    path: backend/order_service    }
-    defaults:
-      run:
-        shell: bash
-        working-directory: ${{ matrix.svc.path }}
+
+    services:
+      product_db:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: products
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      order_db:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orders
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5433:5432
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          python -m pip install pytest || true
+          # install each service's deps
+          for req in backend/*/requirements.txt; do
+            echo "Installing $req"
+            pip install -r "$req"
+          done
+          # test tools
+          python -m pip install pytest
 
-      - name: Run pytest (skip gracefully if none)
+      - name: Run product_service tests
+        working-directory: backend/product_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_DB: products
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
         run: |
-          if [ -d tests ] || ls -1 test_*.py 2>/dev/null | grep -q .; then
-            pytest -q --junitxml=../junit-${{ matrix.svc.name }}.xml
-          else
-            echo "No tests found in $PWD; skipping."
-          fi
+          if [ -d tests ]; then pytest -q --junitxml=junit-product_service.xml; else echo "No tests"; fi
 
-      - name: Upload JUnit
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: junit-${{ matrix.svc.name }}
-          path: ${{ matrix.svc.path }}/../junit-${{ matrix.svc.name }}.xml
-          if-no-files-found: ignore
-
-  build_and_push:
-    name: Build & push images to ACR
-    runs-on: ubuntu-latest
-    needs: test
-    strategy:
-      matrix:
-        image:
-          - { name: customer-service, context: backend/customer_service, dockerfile: Dockerfile }
-          - { name: product-service,  context: backend/product_service,  dockerfile: Dockerfile }
-          - { name: order-service,    context: backend/order_service,    dockerfile: Dockerfile }
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-   
-      - name: Docker login to ACR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ACR_LOGIN_SERVER }}   
-          username: ${{ secrets.ACR_USERNAME }}       
-          password: ${{ secrets.ACR_PASSWORD }}       
+      - name: Run order_service tests
+        working-directory: backend/order_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5433
+          POSTGRES_DB: orders
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        run: |
+          if [ -d tests ]; then pytest -q --junitxml=junit-order_service.xml; else echo "No tests"; fi
 
     
 
-      - name: Set tags
-        id: meta
-        run: |
-          echo "sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
-          echo "branch=testing" >> $GITHUB_OUTPUT
-
-      - name: Build & Push
-        uses: docker/build-push-action@v6
+      - name: Upload JUnit reports
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          context: ${{ matrix.image.context }}
-          file: ${{ matrix.image.context }}/${{ matrix.image.dockerfile }}
-          push: true
-          tags: |
-            ${{ secrets.ACR_LOGIN_SERVER }}/${{ matrix.image.name }}:${{ steps.meta.outputs.sha }}
-            ${{ secrets.ACR_LOGIN_SERVER }}/${{ matrix.image.name }}:${{ steps.meta.outputs.branch }}
-          cache-from: type=registry,ref=${{ secrets.ACR_LOGIN_SERVER }}/${{ matrix.image.name }}:buildcache
-          cache-to: type=registry,ref=${{ secrets.ACR_LOGIN_SERVER }}/${{ matrix.image.name }}:buildcache,mode=max
+          name: junit-reports
+          path: |
+            backend/product_service/junit-product_service.xml
+            backend/order_service/junit-order_service.xml
+          if-no-files-found: ignore
+
+  build_and_push_images:
+    name: Build and push images to ACR
+    runs-on: ubuntu-latest
+    needs: test_and_lint_backends
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Login to Azure with Service Principal (single JSON secret)
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Authenticate Docker to ACR (uses the Azure CLI session)
+      - name: Login to Azure Container Registry
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Resolve login server (fallback if not supplied)
+        id: acr
+        run: |
+          if [ -z "${ACR_LOGIN_SERVER}" ]; then
+            echo "server=$(az acr show -n "$ACR_NAME" --query loginServer -o tsv)" >> $GITHUB_OUTPUT
+          else
+            echo "server=${ACR_LOGIN_SERVER}" >> $GITHUB_OUTPUT
+          fi
+
+      # Build & push Product Service
+      - name: Build and Push Product Service Image
+        run: |
+          SERVER=${{ steps.acr.outputs.server }}
+          docker build -t $SERVER/product-service:${{ github.sha }} ./backend/product_service
+          docker tag  $SERVER/product-service:${{ github.sha }} $SERVER/product-service:testing
+          docker push $SERVER/product-service:${{ github.sha }}
+          docker push $SERVER/product-service:testing
+
+      # Build & push Order Service
+      - name: Build and Push Order Service Image
+        run: |
+          SERVER=${{ steps.acr.outputs.server }}
+          docker build -t $SERVER/order-service:${{ github.sha }} ./backend/order_service
+          docker tag  $SERVER/order-service:${{ github.sha }} $SERVER/order-service:testing
+          docker push $SERVER/order-service:${{ github.sha }}
+          docker push $SERVER/order-service:testing
+
+    
