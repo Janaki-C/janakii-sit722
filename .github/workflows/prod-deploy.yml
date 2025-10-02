@@ -2,8 +2,8 @@ name: Stage 3 — Deploy to Production (on merge to main)
 
 on:
   push:
-    branches: [ main ]           # runs after a PR is merged to main
-  workflow_dispatch:              # manual run if needed
+    branches: [ main ]           
+  workflow_dispatch:              
 
 jobs:
   build_and_deploy_prod:
@@ -17,7 +17,7 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Build & push production images (tag with SHA and 'prod')
+      
       - name: Resolve ACR login server
         id: reg
         shell: bash
@@ -55,9 +55,7 @@ jobs:
             ${{ steps.reg.outputs.server }}/order-service:${{ github.sha }}
             ${{ steps.reg.outputs.server }}/order-service:prod
 
-      # ---- Deploy to production AKS ----
-      # If prod uses the SAME cluster as staging, reuse RESOURCE_GROUP/AKS_NAME.
-      # If it's a different cluster, add repo variables: PROD_RESOURCE_GROUP / PROD_AKS_NAME
+      
       - name: Get AKS credentials (prod)
         shell: bash
         run: |
