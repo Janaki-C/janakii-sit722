@@ -1,0 +1,56 @@
+name: Stage 2 — Ephemeral Staging Deploy, Test, Teardown
+
+on:
+  workflow_run:
+    workflows: [ "Stage 1 CI — Test, Build and Push Images to ACR" ]
+    types: [ completed ]
+
+
+jobs:
+  deploy_ephemeral_staging:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'testing' }}
+    runs-on: ubuntu-latest
+
+    env:
+      NS: stg-${{ github.event.workflow_run.run_number }}
+
+    steps:
+      - name: Check out the triggering commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials -g "${{ vars.RESOURCE_GROUP }}" -n "${{ vars.AKS_NAME }}" --overwrite-existing
+
+      - name: Create ephemeral namespace
+        run: kubectl create ns "$NS"
+
+      - name: Apply manifests to staging namespace
+        run: kubectl apply -n "$NS" -f k8s/
+
+      - name: Point deployments to freshly built images (:testing)
+        run: |
+          SERVER=$(az acr show -n "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)
+          kubectl set image -n "$NS" deployment/product-service product=$SERVER/product-service:testing
+          kubectl set image -n "$NS" deployment/order-service   order=$SERVER/order-service:testing
+
+      - name: Wait for rollouts
+        run: |
+          kubectl rollout status -n "$NS" deployment/product-service --timeout=180s
+          kubectl rollout status -n "$NS" deployment/order-service   --timeout=180s
+
+      - name: Smoke test /health
+        run: |
+          kubectl run curl -n "$NS" --image=curlimages/curl:8.10.1 --restart=Never --rm -i -- \
+            sh -lc 'set -e; curl -fsS http://product-service:8001/health; curl -fsS http://order-service:8000/health'
+
+      - name: Tear down staging (always)
+        if: always()
+        run: kubectl delete ns "$NS" --wait=true

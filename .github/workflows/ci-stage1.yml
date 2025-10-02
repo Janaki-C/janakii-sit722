@@ -1,13 +1,12 @@
 name: Stage 1 CI — Test, Build and Push Images to ACR
 
 on:
-  workflow_dispatch:
   push:
     branches: [ testing ]
+  workflow_dispatch:
 
 env:
-
-  IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
   test_backends:
@@ -26,8 +25,7 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-        ports:
-          - 5432:5432
+        ports: [ "5432:5432" ]
 
       order_db:
         image: postgres:15
@@ -40,22 +38,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-        ports:
-          - 5433:5432
+        ports: [ "5433:5432" ]
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # install each service's deps if present
           for req in backend/*/requirements.txt; do
             echo "Installing $req"
             pip install -r "$req"
@@ -92,16 +86,6 @@ jobs:
             echo "No tests for order_service"
           fi
 
-      - name: Test customer_service (optional)
-        working-directory: backend/customer_service
-        continue-on-error: true
-        run: |
-          if [ -d tests ] || ls -1 test_*.py 2>/dev/null | grep -q .; then
-            pytest -q --junitxml=junit-customer_service.xml
-          else
-            echo "No tests for customer_service"
-          fi
-
       - name: Upload JUnit reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -110,7 +94,6 @@ jobs:
           path: |
             backend/product_service/junit-product_service.xml
             backend/order_service/junit-order_service.xml
-            backend/customer_service/junit-customer_service.xml
           if-no-files-found: ignore
 
   build_and_push_images:
@@ -119,20 +102,23 @@ jobs:
     needs: test_backends
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # Login to Azure using Service Principal (stored in AZURE_CREDENTIALS secret)
       - name: Azure login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Login to ACR using the Azure CLI session
-      - name: ACR login (az acr login)
+      - name: Validate ACR_NAME
+        run: |
+          if [ -z "${{ secrets.ACR_NAME }}" ]; then
+            echo "Secret ACR_NAME is required (e.g., sit722trilochanacr)" 1>&2
+            exit 1
+          fi
+
+      - name: ACR login
         run: az acr login -n "${{ secrets.ACR_NAME }}"
 
-      # Resolve the login server (fallback if not supplied)
       - name: Resolve ACR login server
         id: acr
         run: |
@@ -142,30 +128,22 @@ jobs:
             echo "server=${{ secrets.ACR_LOGIN_SERVER }}" >> $GITHUB_OUTPUT
           fi
 
-      # Build & push Product Service
       - name: Build & Push product-service
-        run: |
-          SERVER=${{ steps.acr.outputs.server }}
-          docker build -t $SERVER/product-service:${{ github.sha }} ./backend/product_service
-          docker tag  $SERVER/product-service:${{ github.sha }} $SERVER/product-service:testing
-          docker push $SERVER/product-service:${{ github.sha }}
-          docker push $SERVER/product-service:testing
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend/product_service
+          file: ./backend/product_service/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.acr.outputs.server }}/product-service:${{ env.IMAGE_TAG }}
+            ${{ steps.acr.outputs.server }}/product-service:testing
 
-      # Build & push Order Service
       - name: Build & Push order-service
-        run: |
-          SERVER=${{ steps.acr.outputs.server }}
-          docker build -t $SERVER/order-service:${{ github.sha }} ./backend/order_service
-          docker tag  $SERVER/order-service:${{ github.sha }} $SERVER/order-service:testing
-          docker push $SERVER/order-service:${{ github.sha }}
-          docker push $SERVER/order-service:testing
-
-      # Build & push Customer Service (optional)
-      - name: Build & Push customer-service
-        continue-on-error: true
-        run: |
-          SERVER=${{ steps.acr.outputs.server }}
-          docker build -t $SERVER/customer-service:${{ github.sha }} ./backend/customer_service || exit 0
-          docker tag  $SERVER/customer-service:${{ github.sha }} $SERVER/customer-service:testing || exit 0
-          docker push $SERVER/customer-service:${{ github.sha }} || exit 0
-          docker push $SERVER/customer-service:testing || exit 0
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend/order_service
+          file: ./backend/order_service/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.acr.outputs.server }}/order-service:${{ env.IMAGE_TAG }}
+            ${{ steps.acr.outputs.server }}/order-service:testing
