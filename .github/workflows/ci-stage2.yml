@@ -1,25 +1,21 @@
-name: Stage 2 — Ephemeral Staging Deploy, Test, Teardown
-
+name: Stage 2 CI — Ephemeral Staging Deploy, Test, Teardown
 
 on:
-  workflow_run:
-    workflows: [ "Stage 1 CI — Test, Build and Push Images to ACR" ]
-    types: [ completed ]
-
+  workflow_call:
+    inputs:
+      image_tag:
+        required: true
+        type: string
 
 jobs:
   deploy_ephemeral_staging:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'testing' }}
     runs-on: ubuntu-latest
-
     env:
-      NS: stg-${{ github.event.workflow_run.run_number }}
+      NS: stg-${{ github.run_id }}
 
     steps:
-      - name: Check out the triggering commit
+      - name: Checkout repo (k8s manifests)
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Azure login
         uses: azure/login@v2
@@ -36,11 +32,12 @@ jobs:
       - name: Apply manifests to staging namespace
         run: kubectl apply -n "$NS" -f k8s/
 
-      - name: Point deployments to freshly built images (:testing)
+      - name: Point deployments to freshly built images
         run: |
           SERVER=$(az acr show -n "${{ secrets.ACR_NAME }}" --query loginServer -o tsv)
-          kubectl set image -n "$NS" deployment/product-service product=$SERVER/product-service:testing
-          kubectl set image -n "$NS" deployment/order-service   order=$SERVER/order-service:testing
+          TAG="${{ inputs.image_tag }}"
+          kubectl set image -n "$NS" deployment/product-service product=$SERVER/product-service:$TAG
+          kubectl set image -n "$NS" deployment/order-service   order=$SERVER/order-service:$TAG
 
       - name: Wait for rollouts
         run: |

@@ -147,3 +147,11 @@ jobs:
           tags: |
             ${{ steps.acr.outputs.server }}/order-service:${{ env.IMAGE_TAG }}
             ${{ steps.acr.outputs.server }}/order-service:testing
+
+  
+  deploy_staging:
+    needs: build_and_push_images
+    uses: ./.github/workflows/ci-stage2.yml
+    with:
+      image_tag: ${{ env.IMAGE_TAG }}  
+    secrets: inherit                     
