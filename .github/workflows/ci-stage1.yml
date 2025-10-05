@@ -113,6 +113,7 @@ jobs:
             exit 1
           fi
 
+
       - name: ACR login
         run: az acr login -n "${{ secrets.ACR_NAME }}"
 
