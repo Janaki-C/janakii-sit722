@@ -13,6 +13,7 @@ jobs:
     env:
       NS: stg-${{ github.run_id }}
 
+
     steps:
       - name: Checkout repo (k8s manifests)
         uses: actions/checkout@v4
