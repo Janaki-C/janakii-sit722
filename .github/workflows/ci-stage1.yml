@@ -109,7 +109,7 @@ jobs:
       - name: Validate ACR_NAME
         run: |
           if [ -z "${{ secrets.ACR_NAME }}" ]; then
-            echo "Secret ACR_NAME is required (e.g., sit722trilochanacr)" 1>&2
+            echo "Secret ACR_NAME is required (e.g., sit722janakiacr)" 1>&2
             exit 1
           fi
 
