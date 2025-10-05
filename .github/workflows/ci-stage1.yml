@@ -117,13 +117,13 @@ jobs:
 
 
       - name: ACR login
-        run: az acr login -n "${{ secrets.ACR_NAME }}"
+        run: az acr login -n "${{ secrets.ACR_USERNAME }}"
 
       - name: Resolve ACR login server
         id: acr
         run: |
           if [ -z "${{ secrets.ACR_LOGIN_SERVER }}" ]; then
-            echo "server=$(az acr show -n ${{ secrets.ACR_NAME }} --query loginServer -o tsv)" >> $GITHUB_OUTPUT
+            echo "server=$(az acr show -n ${{ secrets.ACR_USERNAME }} --query loginServer -o tsv)" >> $GITHUB_OUTPUT
           else
             echo "server=${{ secrets.ACR_LOGIN_SERVER }}" >> $GITHUB_OUTPUT
           fi
