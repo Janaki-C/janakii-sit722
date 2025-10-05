@@ -10,6 +10,7 @@ jobs:
     name: Run backend tests
     runs-on: ubuntu-latest
 
+
     services:
       product_db:
         image: postgres:15
